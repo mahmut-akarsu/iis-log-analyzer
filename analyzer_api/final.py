@@ -8,6 +8,7 @@ import requests
 from fastapi.responses import JSONResponse
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
+import traceback
 
 # FastAPI uygulamasını oluştur
 app = FastAPI()
@@ -108,11 +109,13 @@ async def parse_log_file(uploaded_file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Sadece .log dosyaları desteklenmektedir.")
 
         content = await uploaded_file.read()
+        print(content)
 
         try:
             lines = content.decode("utf-8").splitlines()
         except UnicodeDecodeError:
             lines = content.decode("utf-16").splitlines()
+            traceback.print_exc()
 
         # Başlık bilgilerini al
         software_type = lines[0].strip("#Software: ").split("\n")[0]
@@ -135,7 +138,7 @@ async def parse_log_file(uploaded_file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        traceback.print_exc()
 
 @app.post("/save_file_index_pair/")
 async def save_file_index(file_name: str, index_name: str):
