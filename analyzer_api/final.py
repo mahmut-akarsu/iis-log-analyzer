@@ -1,14 +1,15 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException , Request
 import uvicorn
 import os
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, helpers
 import uuid
 import json
+import traceback
 import requests
 from fastapi.responses import JSONResponse
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
-import traceback
+from more_itertools import chunked 
 
 # FastAPI uygulamasını oluştur
 app = FastAPI()
@@ -80,19 +81,19 @@ def convert_data_types(doc: dict) -> dict:
 async def root():
     return {"message": "FastAPI Çalışıyor!"}
 
-async def upload_log(uploaded_file: UploadFile = File(...)):
+async def upload_log(content: bytes, filename: str):
     """
-    Log dosyasını yükler.
+    Log dosyasını içerik üzerinden kaydeder.
     """
     try:
-        file_location = os.path.join(UPLOAD_DIR, uploaded_file.filename)
+        file_location = os.path.join(UPLOAD_DIR, filename)
         with open(file_location, "wb") as f:
-            f.write(await uploaded_file.read())
+            f.write(content)
         
-        return {"filename": uploaded_file.filename, "message": "File uploaded successfully"}
+        return {"filename": filename, "message": "File uploaded successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+   
 @app.post("/test/")
 async def test_api(text: str):
     return JSONResponse({"message": text})
@@ -103,21 +104,19 @@ async def parse_log_file(uploaded_file: UploadFile = File(...)):
     """
     Yüklenen log dosyasını analiz eder ve verileri çıkarır.
     """
-    upload_log(uploaded_file)
+    content = await uploaded_file.read()
+    await upload_log(content, uploaded_file.filename)
     try:
         if not uploaded_file.filename.endswith(".log"):
             raise HTTPException(status_code=400, detail="Sadece .log dosyaları desteklenmektedir.")
-
-        content = await uploaded_file.read()
-        print(content)
-
         try:
             lines = content.decode("utf-8").splitlines()
         except UnicodeDecodeError:
-            lines = content.decode("utf-16").splitlines()
             traceback.print_exc()
+            lines = content.decode("utf-16").splitlines()
 
         # Başlık bilgilerini al
+        
         software_type = lines[0].strip("#Software: ").split("\n")[0]
         version = lines[1].strip("#Version: ").split("\n")[0]
         created_date, created_time = lines[2].strip("#Date: ").split()
@@ -139,6 +138,7 @@ async def parse_log_file(uploaded_file: UploadFile = File(...)):
 
     except Exception as e:
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/save_file_index_pair/")
 async def save_file_index(file_name: str, index_name: str):
@@ -202,14 +202,19 @@ async def save_to_es(data: dict):
         unique_id = str(uuid.uuid4())[:8]
         index_name = f"iislogs_{created_date}_{created_time}_{unique_id}"
 
-        for doc in data["dataframe"]:
-            formatted_doc = convert_data_types(doc)
-            es.index(index=index_name, document=formatted_doc)
+        for chunk in chunked(data["dataframe"], 1000):
+            actions = [{
+                "_index": index_name,
+                "_source": convert_data_types(doc)
+            } for doc in chunk]
+
+            helpers.bulk(es, actions)
 
         await save_file_index(file_name=data["file_name"], index_name=index_name)
         return {"message": f"Veri Elasticsearch'e başarıyla kaydedildi.", "index_name": index_name, "file_name": data["file_name"]}
 
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.delete("/delete_file/{file_name}")
